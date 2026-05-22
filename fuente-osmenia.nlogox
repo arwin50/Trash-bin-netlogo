@@ -1,0 +1,830 @@
+<?xml version="1.0" encoding="utf-8"?>
+<model version="NetLogo 7.0.3" snapToGrid="false">
+  <code><![CDATA[globals [
+  park-radius
+  outer-ring-radius
+  outer-ring-width
+  inner-plaza-outer-radius
+  inner-plaza-inner-radius
+  fountain-radius
+  path-angle-deg
+  path-width
+  entrance-ne
+  entrance-sw
+  total-litter-events
+  total-litter-on-ground
+  time-to-first-litter
+  first-litter-recorded
+]
+
+patches-own [
+  zone
+  litter-count
+  norm-signal
+  litter-attractiveness   ;; how likely agents are to litter here
+]
+
+breed [people person]
+breed [bins bin]
+
+people-own [
+  agent-type
+  has-trash
+  trash-items-remaining   ;; total trash agent can ever carry this visit
+  holding-fatigue
+  fatigue-threshold
+  hedonic-weight
+  normative-weight
+  norm-signal-personal
+  vision-range
+  effort-tolerance
+  social-influence-weight
+  environmental-sensitivity
+  dwell-time
+  destination
+  laps-remaining
+  speed
+  exited
+]
+
+bins-own [
+  capacity
+  current-load
+  bin-type
+]
+
+to setup
+  clear-all
+
+  set park-radius               25
+  set outer-ring-radius         22
+  set outer-ring-width           2
+  set inner-plaza-outer-radius  12
+  set inner-plaza-inner-radius   8
+  set fountain-radius            3
+  set path-angle-deg            50
+  set path-width                 1
+
+  set total-litter-events       0
+  set total-litter-on-ground    0
+  set time-to-first-litter     -1
+  set first-litter-recorded    false
+
+  setup-patches
+  setup-entrances
+  setup-initial-litter
+  setup-bins
+  setup-agents
+
+  reset-ticks
+end
+
+;;; ============================================================
+;;; PATCH SETUP
+;;; ============================================================
+
+to setup-patches
+  ask patches [
+    let d distance patch 0 0
+    let angle-rad (path-angle-deg * pi / 180)
+    let perp-dist abs (pxcor * cos angle-rad - pycor * sin angle-rad)
+    let on-path (perp-dist <= path-width)
+
+    ifelse d > park-radius [
+      set zone "exterior"
+    ] [
+    ifelse d <= fountain-radius [
+      set zone "fountain"
+    ] [
+    ifelse d <= inner-plaza-outer-radius [
+      set zone "inner-plaza"
+    ] [
+    ifelse on-path [
+      set zone "path"
+    ] [
+    ifelse (d >= (outer-ring-radius - outer-ring-width) and
+            d <= (outer-ring-radius + outer-ring-width)) [
+      set zone "outer-ring"
+    ] [
+      set zone "grass"
+    ]]]]]
+
+    ;; Litter attractiveness: grass is most attractive for littering
+    ;; walkways and paths are less attractive (more visible, more social)
+    if zone = "grass"       [ set litter-attractiveness 1.0  ]
+    if zone = "inner-plaza" [ set litter-attractiveness 0.4  ]
+    if zone = "outer-ring"  [ set litter-attractiveness 0.3  ]
+    if zone = "path"        [ set litter-attractiveness 0.3  ]
+    if zone = "entrance"    [ set litter-attractiveness 0.2  ]
+    if zone = "fountain"    [ set litter-attractiveness 0.0  ]
+    if zone = "exterior"    [ set litter-attractiveness 0.0  ]
+
+    set litter-count 0
+    set norm-signal 1.0
+    color-patch
+  ]
+end
+
+to color-patch
+  if zone = "exterior"    [ set pcolor 29  ]
+  if zone = "grass"       [ set pcolor 64  ]
+  if zone = "outer-ring"  [ set pcolor 8   ]
+  if zone = "path"        [ set pcolor 8   ]
+  if zone = "inner-plaza" [ set pcolor 7   ]
+  if zone = "fountain"    [ set pcolor 97  ]
+  if zone = "entrance"    [ set pcolor 45  ]
+end
+
+;;; ============================================================
+;;; ENTRANCES
+;;; ============================================================
+
+to setup-entrances
+  let angle-rad (path-angle-deg * pi / 180)
+  let ne-x round ((park-radius - 1) * sin angle-rad)
+  let ne-y round ((park-radius - 1) * cos angle-rad)
+  let sw-x (0 - ne-x)
+  let sw-y (0 - ne-y)
+
+  ask patches with [
+    distance patch ne-x ne-y <= 2 and zone != "exterior"
+  ] [
+    set zone "entrance"
+    set litter-attractiveness 0.2
+    color-patch
+  ]
+  ask patches with [
+    distance patch sw-x sw-y <= 2 and zone != "exterior"
+  ] [
+    set zone "entrance"
+    set litter-attractiveness 0.2
+    color-patch
+  ]
+
+  set entrance-ne patch ne-x ne-y
+  set entrance-sw patch sw-x sw-y
+end
+
+;;; ============================================================
+;;; INITIAL LITTER SEEDING
+;;; ============================================================
+
+to setup-initial-litter
+  if initial-litter > 0 [
+    ask patches with [
+      zone = "grass" or zone = "inner-plaza" or
+      zone = "outer-ring" or zone = "path"
+    ] [
+      if random-float 1.0 < (initial-litter * 0.003) [
+        set litter-count (1 + random initial-litter)
+        set norm-signal max (list 0.0 (1.0 - litter-count * 0.15))
+        recolor-litter-patch
+      ]
+    ]
+    set total-litter-on-ground sum [litter-count] of patches
+  ]
+end
+
+;;; ============================================================
+;;; BINS
+;;; ============================================================
+
+to setup-bins
+  place-bins-at-entrance entrance-ne
+  place-bins-at-entrance entrance-sw
+
+  if bin-placement >= 2 [ place-bins-on-outer-ring ]
+  if bin-placement >= 3 [ place-bins-on-inner-plaza ]
+end
+
+to place-bins-at-entrance [ep]
+  let candidates patches with [
+    distance ep <= 4 and
+    (zone = "outer-ring" or zone = "path" or
+     zone = "entrance" or zone = "grass")
+  ]
+  if not any? candidates [ stop ]
+
+  let spots up-to-n-of 2 candidates
+  ask spots [
+    sprout-bins 1 [
+      set bin-type "large"
+      set capacity 50
+      set current-load 0
+      set color 62
+      set shape "circle"
+      set size 1.3
+    ]
+  ]
+  ask one-of candidates [
+    sprout-bins 1 [
+      set bin-type "drum"
+      set capacity 20
+      set current-load 0
+      set color 105
+      set shape "circle"
+      set size 1.0
+    ]
+  ]
+end
+
+to place-bins-on-outer-ring
+  let ring-patches patches with [
+    zone = "outer-ring" and
+    distance entrance-ne > 5 and
+    distance entrance-sw > 5
+  ]
+  if any? ring-patches [
+    ask up-to-n-of 4 ring-patches [
+      sprout-bins 1 [
+        set bin-type "large"
+        set capacity 50
+        set current-load 0
+        set color 62
+        set shape "circle"
+        set size 1.3
+      ]
+    ]
+  ]
+end
+
+to place-bins-on-inner-plaza
+  let plaza-patches patches with [
+    zone = "inner-plaza" and
+    distance patch 0 0 > (fountain-radius + 3) and
+    distance patch 0 0 < (inner-plaza-outer-radius - 1)
+  ]
+  if any? plaza-patches [
+    ask up-to-n-of 4 plaza-patches [
+      sprout-bins 1 [
+        set bin-type "large"
+        set capacity 50
+        set current-load 0
+        set color 62
+        set shape "circle"
+        set size 1.3
+      ]
+    ]
+  ]
+end
+
+;;; ============================================================
+;;; AGENTS
+;;; ============================================================
+
+to setup-agents
+  let n-joggers round (population-size * 0.50)
+  let n-sitters round (population-size * 0.40)
+  let n-passers (population-size - n-joggers - n-sitters)
+
+  create-joggers n-joggers
+  create-sitters n-sitters
+  create-passers n-passers
+end
+
+to create-joggers [n]
+  create-people n [
+    set agent-type "jogger"
+    set shape "person"
+    set color sky
+    set size 1.2
+    set speed 2.2
+    set vision-range 5
+    set effort-tolerance 4
+    set social-influence-weight 0.3
+    set environmental-sensitivity 0.4
+    set laps-remaining (2 + random 3)
+    set dwell-time -1
+    set exited false
+    assign-gft-weights
+    ;; Joggers carry 0-1 trash items for the visit
+    set trash-items-remaining (random 2)
+    assign-trash "jogger"
+    move-to one-of (list entrance-ne entrance-sw)
+    set destination jogger-next-destination
+  ]
+end
+
+to create-sitters [n]
+  create-people n [
+    set agent-type "sitter"
+    set shape "person"
+    set color green + 2
+    set size 1.2
+    set speed 0.5
+    set vision-range 4
+    set effort-tolerance 4
+    set social-influence-weight 0.5
+    set environmental-sensitivity 0.6
+    set dwell-time (120 + random 240)
+    set laps-remaining 0
+    set exited false
+    assign-gft-weights
+    ;; Sitters carry 1-3 trash items (snacks, drinks, etc.)
+    set trash-items-remaining (1 + random 3)
+    assign-trash "sitter"
+    move-to one-of (list entrance-ne entrance-sw)
+    set destination sitter-next-destination
+  ]
+end
+
+to create-passers [n]
+  create-people n [
+    set agent-type "passer"
+    set shape "person"
+    set color orange
+    set size 1.2
+    set speed 1.5
+    set vision-range 5
+    set effort-tolerance 5
+    set social-influence-weight 0.2
+    set environmental-sensitivity 0.3
+    set dwell-time -1
+    set laps-remaining 0
+    set exited false
+    assign-gft-weights
+    ;; Passers carry 0-1 items
+    set trash-items-remaining (random 2)
+    assign-trash "passer"
+    let start one-of (list entrance-ne entrance-sw)
+    move-to start
+    ifelse start = entrance-ne [
+      set destination entrance-sw
+    ] [
+      set destination entrance-ne
+    ]
+  ]
+end
+
+;;; ============================================================
+;;; GFT WEIGHTS
+;;; ============================================================
+
+to assign-gft-weights
+  let u1 random-float 1.0
+  let u2 random-float 1.0
+  set hedonic-weight (min (list u1 u2)) * 0.8 + 0.05
+  let noise ((random-float 0.2) - 0.1)
+  set normative-weight max (list 0.1 (1.0 - hedonic-weight + noise))
+  set norm-signal-personal 1.0
+  set holding-fatigue 0.0
+  set fatigue-threshold (1.0 + random-float 2.0)
+end
+
+to assign-trash [atype]
+  let prob 0.50
+  if atype = "jogger" [ set prob 0.40 ]
+  if atype = "sitter" [ set prob 0.78 ]
+  if atype = "passer" [ set prob 0.50 ]
+  set has-trash (random-float 1.0 < prob)
+  ;; If assigned trash, count it against remaining items
+  if has-trash and trash-items-remaining > 0 [
+    set trash-items-remaining trash-items-remaining - 1
+  ]
+  ;; If no remaining items override to no trash
+  if trash-items-remaining <= 0 [ set has-trash false ]
+end
+
+;;; ============================================================
+;;; TRASH REGENERATION (LIMITED)
+;;; ============================================================
+
+to maybe-pickup-next-trash
+  ;; Agent picks up next trash item only if they have remaining items
+  ;; and are not currently holding trash
+  if not has-trash and trash-items-remaining > 0 [
+    ;; Small per-tick probability of consuming next item
+    let pickup-prob 0.0
+    if agent-type = "sitter" [ set pickup-prob 0.002 ]  ;; ~every 500 ticks
+    if agent-type = "jogger" [ set pickup-prob 0.001 ]
+    if agent-type = "passer" [ set pickup-prob 0.001 ]
+
+    if random-float 1.0 < pickup-prob [
+      set has-trash true
+      set holding-fatigue 0
+      set trash-items-remaining trash-items-remaining - 1
+    ]
+  ]
+end
+
+;;; ============================================================
+;;; DESTINATION HELPERS
+;;; ============================================================
+
+to-report jogger-next-destination
+  let r random-float 1.0
+  let candidates nobody
+  
+  ifelse r < 0.70 [
+    set candidates patches with [
+      zone = "outer-ring" and distance myself > 5
+    ]
+  ] [
+    set candidates patches with [
+      zone = "inner-plaza" and
+      distance patch 0 0 > (fountain-radius + 4) and
+      distance myself > 5
+    ]
+  ]
+  
+  if any? candidates [ report one-of candidates ]
+  let fallback patches with [ zone = "outer-ring" and distance myself > 3 ]
+  if any? fallback [ report one-of fallback ]
+  report one-of (list entrance-ne entrance-sw)
+end
+
+
+to-report sitter-next-destination
+  let candidates patches with [
+    zone = "inner-plaza" and
+    distance patch 0 0 > (fountain-radius + 2) and
+    distance myself > 2
+  ]
+  if any? candidates [ report one-of candidates ]
+  let grass-candidates patches with [
+    zone = "grass" and distance myself > 2
+  ]
+  if any? grass-candidates [ report one-of grass-candidates ]
+  report patch 0 0
+end
+
+;;; ============================================================
+;;; MAIN LOOP
+;;; ============================================================
+
+to go
+  if limit-ticks and ticks >= 1000 [ stop ]
+
+  ask people with [ not exited ] [
+    escape-if-stuck
+    move-agent
+    maybe-pickup-next-trash
+    if has-trash [ update-fatigue ]
+    observe-environment
+    if has-trash [ decide-litter ]
+    check-exit
+  ]
+
+  update-patch-norm-signals
+  update-metrics
+  tick
+end
+
+;;; ============================================================
+;;; ESCAPE
+;;; ============================================================
+
+to escape-if-stuck
+  if [zone] of patch-here = "fountain" or
+     [zone] of patch-here = "exterior" [
+    let safe-patch min-one-of patches with [
+      zone = "inner-plaza" and
+      distance patch 0 0 > (fountain-radius + 1)
+    ] [distance myself]
+    if safe-patch != nobody [ move-to safe-patch ]
+  ]
+end
+
+;;; ============================================================
+;;; MOVEMENT
+;;; ============================================================
+
+to move-agent
+  if destination = nobody [ set destination find-destination ]
+  if not is-traversable destination [ set destination find-destination ]
+
+  face destination
+
+  let next-p patch-ahead 1
+  ifelse next-p != nobody and is-traversable next-p [
+    let step min (list 1.0 (distance destination))
+    fd step
+  ] [
+    let alt find-traversable-neighbor
+    if alt != nobody [ face alt fd 0.5 ]
+  ]
+
+  if [zone] of patch-here = "fountain" or
+     [zone] of patch-here = "exterior" [
+    let safe-patch min-one-of patches with [
+      zone = "inner-plaza" and
+      distance patch 0 0 > (fountain-radius + 1)
+    ] [distance myself]
+    if safe-patch != nobody [ move-to safe-patch ]
+  ]
+
+  if distance destination < 1 [
+    if agent-type = "jogger" [
+      if distance entrance-ne < 4 or distance entrance-sw < 4 [
+        set laps-remaining laps-remaining - 1
+      ]
+    ]
+    set destination find-destination
+  ]
+end
+
+to-report is-traversable [p]
+  if p = nobody [ report false ]
+  let z [zone] of p
+  report (z != "exterior" and z != "fountain")
+end
+
+to-report find-traversable-neighbor
+  let candidates neighbors with [
+    zone != "exterior" and zone != "fountain"
+  ]
+  if any? candidates [ report one-of candidates ]
+  report nobody
+end
+
+to-report find-destination
+  if agent-type = "jogger" [ report jogger-next-destination ]
+  if agent-type = "sitter" [ report sitter-next-destination ]
+  if agent-type = "passer" [
+    ifelse distance entrance-ne < distance entrance-sw [
+      report entrance-sw
+    ] [
+      report entrance-ne
+    ]
+  ]
+  report patch 0 0
+end
+
+;;; ============================================================
+;;; FATIGUE
+;;; ============================================================
+
+to update-fatigue
+  set holding-fatigue holding-fatigue + 0.02
+end
+
+;;; ============================================================
+;;; ENVIRONMENT OBSERVATION
+;;; ============================================================
+
+to observe-environment
+  let local-litter sum [litter-count] of patches in-radius vision-range
+
+  if local-litter > 0 [
+    let litter-effect environmental-sensitivity *
+      (local-litter / (vision-range ^ 2)) * 0.1
+    set norm-signal-personal max (list 0.0
+      (norm-signal-personal - litter-effect))
+  ]
+
+  ;; Faster recovery -- norm signal should not permanently collapse
+  set norm-signal-personal min (list 1.0 (norm-signal-personal + 0.005))
+end
+
+;;; ============================================================
+;;; LITTERING DECISION (GFT)
+;;; ============================================================
+
+to decide-litter
+  ;; Check for reachable bins within effort tolerance
+  let nearby-bins bins in-radius effort-tolerance
+  if any? nearby-bins [
+    let target-bin min-one-of nearby-bins [distance myself]
+    face target-bin
+    fd min (list speed (distance target-bin))
+    if [zone] of patch-here = "fountain" or
+       [zone] of patch-here = "exterior" [
+      let safe-patch min-one-of patches with [
+        zone = "inner-plaza" and distance patch 0 0 > (fountain-radius + 1)
+      ] [distance myself]
+      if safe-patch != nobody [ move-to safe-patch ]
+    ]
+    if distance target-bin < 1.5 [
+      ask target-bin [ set current-load current-load + 1 ]
+      set has-trash false
+      set holding-fatigue 0
+    ]
+    stop
+  ]
+
+  ;; No bin reachable: GFT payoff comparison
+  let hedonic-payoff hedonic-weight * holding-fatigue
+  let normative-payoff normative-weight * norm-signal-personal
+
+  if hedonic-payoff > normative-payoff [
+    ;; Litter attractiveness of current patch scales the probability
+    ;; Agents more likely to litter on grass than on visible walkways
+    let base-prob min (list 1.0
+      ((hedonic-payoff - normative-payoff) / fatigue-threshold))
+    let litter-prob base-prob * [litter-attractiveness] of patch-here
+
+    if random-float 1.0 < litter-prob [
+      ask patch-here [ set litter-count litter-count + 1 ]
+      set has-trash false
+      set holding-fatigue 0
+      set total-litter-events total-litter-events + 1
+
+      if not first-litter-recorded [
+        set time-to-first-litter ticks
+        set first-litter-recorded true
+      ]
+
+      recolor-litter-patch
+    ]
+  ]
+end
+
+to recolor-litter-patch
+  let base-color 0
+  if zone = "grass"       [ set base-color 64 ]
+  if zone = "outer-ring"  [ set base-color 8  ]
+  if zone = "inner-plaza" [ set base-color 7  ]
+  if zone = "path"        [ set base-color 8  ]
+  if zone = "entrance"    [ set base-color 45 ]
+  if litter-count > 0 [
+    set pcolor max (list (base-color - min (list litter-count 3)) 1)
+  ]
+end
+
+;;; ============================================================
+;;; EXIT CHECK
+;;; ============================================================
+
+to check-exit
+  if agent-type = "passer" [
+    if distance entrance-ne < 1 or distance entrance-sw < 1 [
+      set exited true
+      die
+    ]
+  ]
+
+  if agent-type = "sitter" [
+    set dwell-time dwell-time - 1
+    if dwell-time <= 0 [
+      set destination one-of (list entrance-ne entrance-sw)
+      if distance destination < 1 [
+        set exited true
+        die
+      ]
+    ]
+  ]
+
+  if agent-type = "jogger" [
+    if laps-remaining <= 0 [
+      set destination one-of (list entrance-ne entrance-sw)
+      if distance destination < 1 [
+        set exited true
+        die
+      ]
+    ]
+  ]
+end
+
+;;; ============================================================
+;;; PATCH NORM SIGNAL UPDATE
+;;; ============================================================
+
+to update-patch-norm-signals
+  ask patches with [ zone != "exterior" and zone != "fountain" ] [
+    if litter-count > 0 [
+      set norm-signal max (list 0.0
+        (norm-signal - (litter-count * 0.001)))
+    ]
+    ;; Faster patch norm recovery too
+    set norm-signal min (list 1.0 (norm-signal + 0.002))
+  ]
+end
+
+;;; ============================================================
+;;; METRICS
+;;; ============================================================
+
+to update-metrics
+  set total-litter-on-ground sum [litter-count] of patches
+end
+
+to-report bin-utilization-rate
+  let total-capacity sum [capacity] of bins
+  if total-capacity = 0 [ report 0 ]
+  report (sum [current-load] of bins) / total-capacity
+end
+
+to-report litter-hotspot-count
+  report count patches with [ litter-count >= 3 ]
+end]]></code>
+  <widgets>
+    <view x="210" wrappingAllowedX="false" y="10" frameRate="30.0" minPycor="-37" height="539" showTickCounter="true" patchSize="7.0" fontSize="10" wrappingAllowedY="false" width="538" tickCounterLabel="ticks" maxPycor="37" updateMode="0" maxPxcor="37" minPxcor="-37"></view>
+    <button x="10" y="10" height="33" disableUntilTicks="false" forever="false" kind="Observer" display="Setup" width="90" sizeVersion="0">setup</button>
+    <button x="105" y="10" height="33" disableUntilTicks="true" forever="true" kind="Observer" display="Go" width="95" sizeVersion="0">go</button>
+    <slider x="10" step="1" y="55" max="70" display="population-size" height="33" min="20" direction="Horizontal" default="35.0" variable="population-size" width="190" sizeVersion="0"></slider>
+    <slider x="10" step="1" y="95" max="5" display="initial-litter" height="33" min="0" direction="Horizontal" default="0.0" variable="initial-litter" width="190" sizeVersion="0"></slider>
+    <slider x="10" step="1" y="135" max="3" display="bin-placement" height="33" min="1" direction="Horizontal" default="3.0" variable="bin-placement" width="190" sizeVersion="0"></slider>
+    <switch x="10" y="175" height="33" on="false" variable="limit-ticks" display="limit-ticks" width="190" sizeVersion="0"></switch>
+    <monitor x="10" precision="0" y="220" height="45" fontSize="11" display="Total Litter Events" width="190" sizeVersion="0">total-litter-events</monitor>
+    <monitor x="10" precision="0" y="270" height="45" fontSize="11" display="Litter On Ground" width="190" sizeVersion="0">total-litter-on-ground</monitor>
+    <monitor x="10" precision="3" y="320" height="45" fontSize="11" display="Bin Utilization Rate" width="190" sizeVersion="0">bin-utilization-rate</monitor>
+    <monitor x="10" precision="0" y="370" height="45" fontSize="11" display="Hotspot Count" width="190" sizeVersion="0">litter-hotspot-count</monitor>
+    <monitor x="10" precision="0" y="420" height="45" fontSize="11" display="Time to First Litter" width="190" sizeVersion="0">time-to-first-litter</monitor>
+    <plot x="760" autoPlotX="true" yMax="10.0" autoPlotY="true" yAxis="litter" y="10" xMin="0.0" height="200" legend="false" xMax="1000.0" yMin="0.0" xAxis="ticks" display="Litter Over Time" width="300" sizeVersion="0">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="ground litter" color="-2674135" legend="true">
+        <setup></setup>
+        <update>plot total-litter-on-ground</update>
+      </pen>
+    </plot>
+    <plot x="760" autoPlotX="true" yMax="1.0" autoPlotY="true" yAxis="norm signal" y="220" xMin="0.0" height="200" legend="false" xMax="1000.0" yMin="0.0" xAxis="ticks" display="Norm Signal Over Time" width="300" sizeVersion="0">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="mean norm" color="-13345367" legend="true">
+        <setup></setup>
+        <update>if any? people [ plot mean [norm-signal-personal] of people ]</update>
+      </pen>
+    </plot>
+  </widgets>
+  <info><![CDATA[## WHAT IS IT?
+
+An Agent-Based Model simulating pedestrian littering behavior at Fuente Osmena Circle, Cebu City.
+Grounded in Goal Framing Theory (Lindenberg & Steg, 2007).
+
+## HOW TO USE IT
+
+1. Set population-size (20-70)
+2. Set initial-litter (0=clean, 5=dirty)
+3. Set bin-placement (1=sparse, 2=moderate, 3=dense)
+4. Toggle limit-ticks ON for BehaviorSpace runs (stops at 1000 ticks)
+5. Click Setup then Go
+
+## ZONES
+
+- Exterior: outside park boundary, non-traversable
+- Grass: open park area, highest litter attractiveness
+- Outer ring: paved walkway near park edge, joggers run here
+- Inner plaza: large paved area around fountain, sitters congregate here
+- Fountain: center structure, non-traversable
+- Path: diagonal NE-SW connecting path
+- Entrance: spawn and exit points at NE and SW
+]]></info>
+  <turtleShapes>
+    <shape name="default" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="5"></point>
+        <point x="40" y="250"></point>
+        <point x="150" y="205"></point>
+        <point x="260" y="250"></point>
+      </polygon>
+    </shape>
+    <shape name="circle" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+    </shape>
+    <shape name="person" rotatable="false" editableColorIndex="0">
+      <circle x="110" y="5" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="90"></point>
+        <point x="120" y="195"></point>
+        <point x="90" y="285"></point>
+        <point x="105" y="300"></point>
+        <point x="135" y="300"></point>
+        <point x="150" y="225"></point>
+        <point x="165" y="300"></point>
+        <point x="195" y="300"></point>
+        <point x="210" y="285"></point>
+        <point x="180" y="195"></point>
+        <point x="195" y="90"></point>
+      </polygon>
+      <rectangle endX="172" startY="79" marked="true" color="-1920102913" endY="94" startX="127" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="195" y="90"></point>
+        <point x="240" y="150"></point>
+        <point x="225" y="180"></point>
+        <point x="165" y="105"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="90"></point>
+        <point x="60" y="150"></point>
+        <point x="75" y="180"></point>
+        <point x="135" y="105"></point>
+      </polygon>
+    </shape>
+  </turtleShapes>
+  <linkShapes>
+    <shape name="default" curviness="0.0">
+      <lines>
+        <line x="-0.2" visible="false">
+          <dash value="0.0"></dash>
+          <dash value="1.0"></dash>
+        </line>
+        <line x="0.0" visible="true">
+          <dash value="1.0"></dash>
+          <dash value="0.0"></dash>
+        </line>
+        <line x="0.2" visible="false">
+          <dash value="0.0"></dash>
+          <dash value="1.0"></dash>
+        </line>
+      </lines>
+      <indicator>
+        <shape name="link direction" rotatable="true" editableColorIndex="0">
+          <line endX="90" startY="150" marked="true" color="-1920102913" endY="180" startX="150"></line>
+          <line endX="210" startY="150" marked="true" color="-1920102913" endY="180" startX="150"></line>
+        </shape>
+      </indicator>
+    </shape>
+  </linkShapes>
+  <previewCommands>setup repeat 75 [ go ]</previewCommands>
+</model>
