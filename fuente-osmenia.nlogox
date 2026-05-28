@@ -55,6 +55,7 @@ people-own [
   checkpoint-index
   use-inner-circuit
   jog-direction
+  is-moving
 ]
 
 bins-own [
@@ -444,7 +445,9 @@ to assign-gft-weights
   set normative-weight max (list 0.1 (1.0 - hedonic-weight + noise))
   set norm-signal-personal 1.0
   set holding-fatigue 0.0
-  set fatigue-threshold (0.5 + random-float 1.0)   ;; 0.5–1.5, was 1.0–3.0
+  set fatigue-threshold (0.5 + random-float 1.0) * (2.0 - laziness-factor)
+;; laziness-factor slider: 0.0 (not lazy) to 1.0 (very lazy)
+;; higher laziness → lower threshold → litters sooner
 end
 
 to assign-trash [atype]
@@ -588,6 +591,8 @@ end
 ;;; ============================================================
 
 to move-agent
+  set is-moving true
+  
   if agent-type = "leisurer" and dwell-time = -1 and destination != nobody [
     if [zone] of destination = "inner-plaza" [
       let total-dwelling count people with [
@@ -601,6 +606,7 @@ to move-agent
   ]
   
   if agent-type = "leisurer" and dwell-time > 0 [
+    set is-moving false
     if random-float 1.0 < 0.25 [
       ;; 60% stay near inner-plaza, 40% wander out to grass
       ;; Use a large radius so grass is actually reachable from the plaza center
@@ -777,7 +783,7 @@ end
 to update-fatigue
   ;; Increased from 0.02 to 0.05 so fatigue reaches threshold in ~20-60 ticks
   ;; rather than 50-150 ticks. fatigue-threshold is now also lower (see assign-gft-weights).
-  set holding-fatigue holding-fatigue + 0.05
+  set holding-fatigue holding-fatigue + (0.05 * (1.0 + laziness-factor))
 end
 
 ;;; ============================================================
@@ -802,8 +808,10 @@ end
 ;;; ============================================================
 
 to decide-litter
-  ;; Leisurers walking to plaza haven't settled yet — no littering en route
-  if agent-type = "leisurer" and dwell-time = -1 [ stop ]
+  ;; Agents NOT moving have base probability; agents moving get a boost
+  let motion-boost ifelse-value is-moving
+    [ 1.0 + 0.5 ]
+    [ 1.0 ]
 
   let nearby-bins bins in-radius effort-tolerance
   if any? nearby-bins [
@@ -833,13 +841,23 @@ to decide-litter
   if hedonic-payoff > normative-payoff [
     let base-prob min (list 1.0
       ((hedonic-payoff - normative-payoff) / fatigue-threshold))
-    let litter-prob base-prob * [litter-attractiveness] of patch-here
+    let litter-boost 1.0 + (litter-sensitivity-factor *
+      min (list 1.0 ([litter-count] of patch-here * 0.2)))
+    let litter-prob base-prob * [litter-attractiveness] of patch-here * litter-boost * motion-boost
 
     if random-float 1.0 < litter-prob [
       ask patch-here [ set litter-count litter-count + 1 ]
       set has-trash false
       set holding-fatigue 0
       set total-litter-events total-litter-events + 1
+      
+      ;; GROUP LITTER CONTAGION: nearby agents see this and weaken their norms
+      ask people in-radius vision-range with [
+        self != myself and has-trash
+      ] [
+        set norm-signal-personal max (list 0.0
+          (norm-signal-personal - group-litter-factor * 0.3))
+      ]
 
       if not first-litter-recorded [
         set time-to-first-litter ticks
@@ -994,7 +1012,7 @@ end]]></code>
     <button x="105" y="10" height="33" disableUntilTicks="true" forever="true" kind="Observer" display="Go" width="95" sizeVersion="0">go</button>
     <slider x="10" step="0.5" y="55" max="5" display="arrival-rate" height="33" min="0.5" direction="Horizontal" default="5.0" variable="arrival-rate" width="190" sizeVersion="0"></slider>
     <slider x="10" step="1" y="95" max="5" display="initial-litter" height="33" min="0" direction="Horizontal" default="0.0" variable="initial-litter" width="190" sizeVersion="0"></slider>
-    <slider x="10" step="1" y="135" max="3" display="bin-placement" height="33" min="1" direction="Horizontal" default="0.0" variable="bin-placement" width="190" sizeVersion="0"></slider>
+    <slider x="10" step="1" y="135" max="3" display="bin-placement" height="33" min="1" direction="Horizontal" default="3.0" variable="bin-placement" width="190" sizeVersion="0"></slider>
     <slider x="10" step="1" y="155" max="10" display="litter-scatter-threshold" height="33" min="1" direction="Horizontal" default="5.0" variable="litter-scatter-threshold" width="190" sizeVersion="0"></slider>
     <switch x="10" y="175" height="33" on="false" variable="limit-ticks" display="limit-ticks" width="190" sizeVersion="0"></switch>
     <monitor x="10" precision="0" y="220" height="45" fontSize="11" display="Total Agents Spawned" width="190" sizeVersion="0">total-agents-spawned</monitor>
@@ -1023,6 +1041,9 @@ end]]></code>
     <button x="523" y="562" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="91" display="Clear Bins">ask bins [die]</button>
     <button x="412" y="562" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="102" display="Remove bin">remove-bin-mouse</button>
     <button x="319" y="562" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="87" display="Place Bin">place-bin-mouse</button>
+    <slider x="1066" step="0.01" y="10" max="1" width="250" display="laziness-factor" height="50" min="0" direction="Horizontal" default="1.0" variable="laziness-factor"></slider>
+    <slider x="1066" step="0.01" y="66" max="1" width="250" display="litter-sensitivity-factor" height="50" min="0" direction="Horizontal" default="1.0" variable="litter-sensitivity-factor"></slider>
+    <slider x="1067" step="0.01" y="122" max="1" width="250" display="group-litter-factor" height="50" min="0" direction="Horizontal" default="1.0" variable="group-litter-factor"></slider>
   </widgets>
   <info><![CDATA[## WHAT IS IT?
 
@@ -1114,4 +1135,49 @@ Grounded in Goal Framing Theory (Lindenberg & Steg, 2007).
     </shape>
   </linkShapes>
   <previewCommands>setup repeat 75 [ go ]</previewCommands>
+  <experiments>
+    <experiment name="experiment 1" repetitions="30" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="10000">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>total-litter-events</metric>
+        <metric>total-litter-on-ground</metric>
+        <metric>litter-hotspot-count</metric>
+        <metric>bin-utilization-rate</metric>
+        <metric>total-agents-spawned</metric>
+        <metric>ticks</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="bin-placement">
+          <value value="0"></value>
+          <value value="1"></value>
+          <value value="2"></value>
+          <value value="3"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="laziness-factor">
+          <value value="0"></value>
+          <value value="0.5"></value>
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="litter-sensitivity-factor">
+          <value value="0"></value>
+          <value value="0.5"></value>
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="group-litter-factor">
+          <value value="0"></value>
+          <value value="0.5"></value>
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="arrival-rate">
+          <value value="0"></value>
+          <value value="2.5"></value>
+          <value value="5"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="initial-litter">
+          <value value="0"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+  </experiments>
 </model>
