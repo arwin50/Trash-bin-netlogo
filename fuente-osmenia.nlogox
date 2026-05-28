@@ -1176,5 +1176,44 @@ Grounded in Goal Framing Theory (Lindenberg & Steg, 2007).
         </enumeratedValueSet>
       </constants>
     </experiment>
+    <experiment name="experiment-2" repetitions="30" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="7500">
+      <setup>setup</setup>
+      <go>go</go>
+      <runMetricsCondition>ticks mod 500 = 0</runMetricsCondition>
+      <metrics>
+        <metric>total-litter-events</metric>
+        <metric>bin-utilization-rate</metric>
+        <metric>total-agents-spawned</metric>
+        <metric>ticks</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="bin-placement">
+          <value value="3"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="laziness-factor">
+          <value value="0"></value>
+          <value value="0.5"></value>
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="litter-sensitivity-factor">
+          <value value="0"></value>
+          <value value="0.5"></value>
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="group-litter-factor">
+          <value value="0"></value>
+          <value value="0.5"></value>
+          <value value="1"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="arrival-rate">
+          <value value="0"></value>
+          <value value="2.5"></value>
+          <value value="5"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="initial-litter">
+          <value value="0"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
   </experiments>
 </model>
