@@ -504,20 +504,42 @@ to-report leisurer-plaza-destination
 end
 
 to-report leisurer-initial-destination
-  ;; 60% head to inner plaza, 25% outer ring, 15% grass
+  ;; Global crowd pressure: total leisurers currently dwelling anywhere
+  let total-dwelling count people with [
+    agent-type = "leisurer" and dwell-time > 0
+  ]
+  ;; As park fills, grass becomes progressively more likely
+  ;; crowd-pressure ranges 0.0–1.0, caps at 20 dwelling agents
+  let crowd-pressure min (list 1.0 (total-dwelling / 20.0))
+
+  ;; Base probs shift with crowd: plaza 50→20%, outer-ring flat 20%, grass 30→60%
+  let plaza-prob    max (list 0.20 (0.50 - crowd-pressure * 0.30))
+  let ring-prob     0.20
+  ;; grass-prob takes the remainder
+  let grass-prob    (1.0 - plaza-prob - ring-prob)
+
   let roll random-float 1.0
-  ifelse roll < 0.60 [
+  ifelse roll < plaza-prob [
     report leisurer-plaza-destination
   ] [
-  ifelse roll < 0.85 [
+  ifelse roll < (plaza-prob + ring-prob) [
     let candidates patches with [ zone = "outer-ring" ]
     if any? candidates [ report one-of candidates ]
-    report leisurer-plaza-destination  ;; fallback
+    report leisurer-plaza-destination
   ] [
-    let candidates patches with [ zone = "grass" ]
-    if any? candidates [ report one-of candidates ]
-    report leisurer-plaza-destination  ;; fallback
+    report leisurer-grass-destination
   ]]
+end
+
+to-report leisurer-grass-destination
+  ;; Full grass band between inner-plaza and outer-ring, plus beyond outer-ring
+  let candidates patches with [
+    zone = "grass" and
+    distance patch 0 0 > (inner-plaza-outer-radius + 1) and
+    distance patch 0 0 < (park-radius - 2)
+  ]
+  if not any? candidates [ report leisurer-plaza-destination ]
+  report one-of candidates
 end
 
 ;;; ============================================================
@@ -566,6 +588,18 @@ end
 ;;; ============================================================
 
 to move-agent
+  if agent-type = "leisurer" and dwell-time = -1 and destination != nobody [
+    if [zone] of destination = "inner-plaza" [
+      let total-dwelling count people with [
+        agent-type = "leisurer" and dwell-time > 0
+      ]
+      ;; Re-route to grass if >8 people already dwelling and luck rolls
+      if total-dwelling > 8 and random-float 1.0 < 0.04 [
+        set destination leisurer-grass-destination
+      ]
+    ]
+  ]
+  
   if agent-type = "leisurer" and dwell-time > 0 [
     if random-float 1.0 < 0.25 [
       ;; 60% stay near inner-plaza, 40% wander out to grass
@@ -582,7 +616,7 @@ to move-agent
       ] [
         ;; Grass wander: pick any grass patch within radius 15
         ;; (grass starts just outside inner-plaza at radius ~12)
-        let wander-target one-of patches in-radius 15 with [ zone = "grass" ]
+        let wander-target one-of patches in-radius 20 with [ zone = "grass" ]
         if wander-target != nobody [
           face wander-target
           fd min (list 0.6 (distance wander-target))
@@ -642,16 +676,13 @@ end
 
 to handle-arrival
   if agent-type = "jogger" and jog-distance-traveled < jog-distance-budget [
-    ;; Accumulate distance covered to this checkpoint
     set jog-distance-traveled jog-distance-traveled + (distance destination + 1)
-    ;; Advance in the jogger's assigned direction (1=CCW, -1=CW)
     let circuit-len length ifelse-value use-inner-circuit
       [ inner-plaza-checkpoints ] [ outer-ring-checkpoints ]
     set checkpoint-index ((checkpoint-index + jog-direction) mod circuit-len + circuit-len) mod circuit-len
     ifelse jog-distance-traveled < jog-distance-budget [
       set destination jogger-checkpoint-patch checkpoint-index
     ] [
-      ;; Budget exhausted: transition smoothly to walk-to-exit
       set speed jog-walk-speed
       set destination one-of (list entrance-ne entrance-sw)
     ]
@@ -662,9 +693,8 @@ to handle-arrival
       set dwell-time (60 + random 120)
       set destination nobody
     ]
-    ;; For outer-ring/grass: shorter dwell, no re-roam eligibility resets
     if [zone] of patch-here = "outer-ring" or [zone] of patch-here = "grass" [
-      set dwell-time (20 + random 40)
+      set dwell-time (60 + random 120)
       set destination nobody
     ]
   ]
@@ -693,12 +723,22 @@ to-report find-destination
     ]
   ]
   if agent-type = "leisurer" [
-    if dwell-time = -1 [ report leisurer-plaza-destination ]
+    if dwell-time = -1 [
+      ;; Count nearby agents on inner-plaza to sense crowding
+      let crowd-nearby count people in-radius 8 with [
+        agent-type = "leisurer" and dwell-time > 0
+      ]
+      ;; If plaza is crowded (>4 dwelling nearby), redirect to grass 50% of the time
+      ifelse crowd-nearby > 4 and random-float 1.0 < 0.50 [
+        report leisurer-grass-destination
+      ] [
+        report leisurer-plaza-destination
+      ]
+    ]
     if dwell-time > 0  [ report nobody ]
     if dwell-time = 0  [
-      ;; 40% chance to wander again rather than exit immediately
       ifelse random-float 1.0 < 0.40 [
-        set dwell-time -1   ;; reset so they can dwell again if they reach plaza
+        set dwell-time -1
         report leisurer-initial-destination
       ] [
         report one-of (list entrance-ne entrance-sw)
