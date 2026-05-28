@@ -1136,23 +1136,20 @@ Grounded in Goal Framing Theory (Lindenberg & Steg, 2007).
   </linkShapes>
   <previewCommands>setup repeat 75 [ go ]</previewCommands>
   <experiments>
-    <experiment name="experiment 1" repetitions="30" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="10000">
+    <experiment name="experiment" repetitions="30" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="7500">
       <setup>setup</setup>
       <go>go</go>
+      <runMetricsCondition>ticks mod 500 = 0</runMetricsCondition>
       <metrics>
         <metric>total-litter-events</metric>
-        <metric>total-litter-on-ground</metric>
-        <metric>litter-hotspot-count</metric>
         <metric>bin-utilization-rate</metric>
         <metric>total-agents-spawned</metric>
         <metric>ticks</metric>
       </metrics>
       <constants>
         <enumeratedValueSet variable="bin-placement">
-          <value value="0"></value>
           <value value="1"></value>
           <value value="2"></value>
-          <value value="3"></value>
         </enumeratedValueSet>
         <enumeratedValueSet variable="laziness-factor">
           <value value="0"></value>
